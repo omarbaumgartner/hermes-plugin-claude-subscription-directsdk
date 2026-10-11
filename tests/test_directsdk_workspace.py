@@ -84,12 +84,22 @@ def test_clients_of_one_user_share_a_workspace_that_survives_close_and_prune(tmp
     assert shared.stat().st_mtime > 0, "every request must refresh the workspace mtime"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows has no uid; its shared workspace lives under LOCALAPPDATA")
+def test_windows_clients_share_one_workspace_under_localappdata(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    shared = tmp_path / "local" / "claude-directsdk" / "cwd"
+    assert set(run_clients(tmp_path, 2)) == {str(shared)}
+    assert shared.is_dir(), "the shared workspace must survive client close"
+
+
 def unsafe(kind, tmp_path, monkeypatch):
     root = tmp_path / "tmp"
     root.mkdir(mode=0o700)
     monkeypatch.setattr(native.tempfile, "tempdir", str(root))
     if kind == "no_uid":
         monkeypatch.delattr(native.os, "getuid", raising=False)
+        # Without LOCALAPPDATA a uid-less host has no safe shared path left either.
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
         return
     shared = shared_path(root)
     if kind == "file":

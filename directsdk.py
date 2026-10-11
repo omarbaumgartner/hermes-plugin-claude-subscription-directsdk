@@ -374,6 +374,31 @@ def _private_dir(path):
     return stat.S_ISDIR(info.st_mode) and (not hasattr(os, 'getuid') or (info.st_uid == os.getuid() and not info.st_mode & 0o077))
 
 
+def _windows_shared_workdir():
+    """Windows has no uid, so the POSIX path above used to fall back to one private cwd per client.
+
+    That moved the cached prefix every time Hermes built a client: measured 2026-10-12, a second
+    client on the same conversation read 0 cached tokens and re-wrote all of them, and such re-writes
+    were ~41% of Opus cache-write tokens. LOCALAPPDATA lives in the user's profile, which Windows
+    already closes to other users, so one fixed directory there is shared only by this user. A link
+    or junction at the path is refused, because it could point the native cwd somewhere else.
+    """
+    base = os.environ.get('LOCALAPPDATA')
+    if os.name != 'nt' or not base:
+        return None
+    path = Path(base) / 'claude-directsdk' / 'cwd'
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        info = os.lstat(path)
+        reparse = getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+        if not stat.S_ISDIR(info.st_mode) or reparse:
+            return None
+        os.utime(path)
+    except OSError:
+        return None
+    return str(path)
+
+
 def shared_workdir():
     """One native cwd for every client of this OS user, or None to fall back to a private one.
 
@@ -383,7 +408,7 @@ def shared_workdir():
     in a parent nobody else can rename it out of. The utime keeps Hermes' 24h scratch prune off it.
     """
     if not hasattr(os, 'getuid'):
-        return None
+        return _windows_shared_workdir()
     path = Path(tempfile.gettempdir()) / f'claude-directsdk-cwd-{os.getuid()}'
     try:
         parent = path.parent.stat().st_mode
